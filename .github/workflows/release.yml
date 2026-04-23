@@ -31,7 +31,7 @@ jobs:
       - name: Install eBPF build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang llvm libbpf-dev bpftool
+          sudo apt-get install -y clang llvm libbpf-dev
 
       - name: Generate eBPF objects
         run: go generate ./...
