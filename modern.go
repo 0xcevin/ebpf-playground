@@ -23,9 +23,33 @@ func runModern(attachExecve, attachNet bool) {
 	}
 
 	// 加载 eBPF 对象
-	objs := traceObjects{}
-	if err := loadTraceObjects(&objs, nil); err != nil {
+	spec, err := loadTrace()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "[FAIL] 加载 eBPF 对象失败: %v\n", err)
+		if errors.Is(err, syscall.ENOSYS) {
+			printEnvFail("当前内核不支持 eBPF 基本功能（bpf 系统调用未实现），需要至少 Linux 4.7+（建议 5.8+）。")
+		}
+		printEnvFail("请检查内核配置是否支持 eBPF，以及是否具备足够权限。")
+	}
+
+	// 按需剔除不需要的 program/map
+	if !attachExecve {
+		delete(spec.Programs, "tracepoint__sys_enter_execve")
+		delete(spec.Programs, "tracepoint__sys_exit_execve")
+	}
+	if !attachNet {
+		delete(spec.Programs, "tracepoint__sys_enter_accept4")
+		delete(spec.Programs, "tracepoint__sys_exit_accept4")
+		delete(spec.Programs, "tracepoint__sys_enter_connect")
+		delete(spec.Maps, "accept4_sockaddr")
+	}
+
+	objs := traceObjects{}
+	if err := spec.LoadAndAssign(&objs, nil); err != nil {
+		fmt.Fprintf(os.Stderr, "[FAIL] 加载 eBPF 对象失败: %v\n", err)
+		if errors.Is(err, syscall.ENOSYS) {
+			printEnvFail("当前内核不支持 eBPF 基本功能（bpf 系统调用未实现），需要至少 Linux 4.7+（建议 5.8+）。")
+		}
 		printEnvFail("请检查内核配置是否支持 eBPF，以及是否具备足够权限。")
 	}
 	defer objs.Close()

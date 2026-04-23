@@ -65,6 +65,13 @@ func main() {
 	// 1. 检查内核版本
 	kver, kverOK := checkKernelVersion()
 	fmt.Printf("内核版本: %s\n", kver)
+	fmt.Printf("系统版本: %s\n", getOSVersion())
+
+	// 分水岭：低于 3.10 的内核直接不支持
+	major, minor := getKernelMajorMinor()
+	if major < 3 || (major == 3 && minor < 10) {
+		printEnvFail(fmt.Sprintf("当前内核版本 %d.%d 过低，本工具不支持低于 Linux 3.10 的内核。需要 CentOS/RHEL 7.6+ 或内核 4.7+。", major, minor))
+	}
 
 	// 2. 检查权限
 	if os.Geteuid() != 0 {
@@ -94,6 +101,11 @@ func main() {
 
 	fmt.Println("===================================")
 	fmt.Println()
+
+	// 探测 eBPF 系统调用是否可用（CentOS 7.5 等老内核不支持 bpf syscall）
+	if !bpfSyscallAvailable() {
+		printEnvFail("当前内核不支持 eBPF 系统调用（bpf syscall 未实现），需要 CentOS/RHEL 7.6+ 或内核 4.7+。")
+	}
 
 	// 确定要 attach 的事件
 	attachExecve := true
@@ -133,6 +145,23 @@ func printEnvFail(hint string) {
 	os.Exit(1)
 }
 
+func getOSVersion() string {
+	if data, err := os.ReadFile("/etc/os-release"); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.HasPrefix(line, "PRETTY_NAME=") {
+				return strings.Trim(strings.TrimPrefix(line, "PRETTY_NAME="), `"`)
+			}
+		}
+	}
+	if data, err := os.ReadFile("/etc/redhat-release"); err == nil {
+		return strings.TrimSpace(string(data))
+	}
+	if data, err := os.ReadFile("/etc/centos-release"); err == nil {
+		return strings.TrimSpace(string(data))
+	}
+	return "unknown"
+}
+
 func checkKernelVersion() (string, bool) {
 	data, err := os.ReadFile("/proc/sys/kernel/osrelease")
 	if err != nil {
@@ -148,6 +177,27 @@ func checkKernelVersion() (string, bool) {
 		}
 	}
 	return kver, false
+}
+
+func getKernelMajorMinor() (major, minor int) {
+	data, err := os.ReadFile("/proc/sys/kernel/osrelease")
+	if err != nil {
+		return 0, 0
+	}
+	kver := strings.TrimSpace(string(data))
+	parts := strings.Split(kver, ".")
+	if len(parts) >= 2 {
+		major, _ = strconv.Atoi(parts[0])
+		minor, _ = strconv.Atoi(parts[1])
+	}
+	return
+}
+
+func bpfSyscallAvailable() bool {
+	// 尝试调用 bpf syscall，cmd=0 在支持的系统上会返回 EINVAL，
+	// 在不支持的系统上返回 ENOSYS
+	_, _, err := unix.Syscall(unix.SYS_BPF, 0, 0, 0)
+	return err != syscall.ENOSYS
 }
 
 func printEvent(e Event) {

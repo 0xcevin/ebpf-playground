@@ -21,6 +21,19 @@ func runLegacy(attachExecve, attachNet bool) {
 		printEnvFail("请检查内核配置是否支持 eBPF，以及是否具备足够权限。")
 	}
 
+	// 按需剔除不需要的 program/map，避免在不支持某些 map 类型的老内核上
+	// 因为加载未使用的对象而失败（例如 3.10 不支持 hash map）
+	if !attachExecve {
+		delete(spec.Programs, "tracepoint__sys_enter_execve")
+		delete(spec.Programs, "tracepoint__sys_exit_execve")
+	}
+	if !attachNet {
+		delete(spec.Programs, "tracepoint__sys_enter_accept4")
+		delete(spec.Programs, "tracepoint__sys_exit_accept4")
+		delete(spec.Programs, "tracepoint__sys_enter_connect")
+		delete(spec.Maps, "accept4_sockaddr")
+	}
+
 	// 老内核（如 CentOS 7 的 3.10）不支持 Map BTF，清空 BTF 避免加载失败
 	for _, m := range spec.Maps {
 		m.Key = nil
@@ -30,6 +43,9 @@ func runLegacy(attachExecve, attachNet bool) {
 	objs := trace_legacyObjects{}
 	if err := spec.LoadAndAssign(&objs, nil); err != nil {
 		fmt.Fprintf(os.Stderr, "[FAIL] 加载 eBPF 兼容对象失败: %v\n", err)
+		if errors.Is(err, syscall.ENOSYS) {
+			printEnvFail("当前内核不支持 eBPF 基本功能（bpf 系统调用未实现），需要至少 Linux 4.7+（建议 5.8+）。")
+		}
 		printEnvFail("请检查内核配置是否支持 eBPF，以及是否具备足够权限。")
 	}
 	defer objs.Close()
