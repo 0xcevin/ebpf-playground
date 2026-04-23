@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.3] - 2026-04-23
+
+### 修复
+- **CentOS 7 兼容模式 map BTF 加载失败**：在 CentOS 7 (3.10.0-862) 上，兼容模式报错 `load BTF: detect support for Map BTF (Var/Datasec): function not implemented`。
+  - 根因：`cilium/ebpf` 在创建 map 时发现 `MapSpec.Key` / `MapSpec.Value` 不为 nil，尝试检测内核 Map BTF 支持性。CentOS 7 的 3.10 内核不支持 Map BTF，`bpf(BTF_LOAD)` 返回 `ENOSYS`。
+  - 修复：在 `legacy.go` 加载兼容对象前，清空所有 map 的 `Key` 和 `Value` BTF 字段，使 `cilium/ebpf` 以传统方式创建 map。
+
+---
+
 ## [0.2.2] - 2026-04-23
 
 ### 修复
