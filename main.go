@@ -16,7 +16,7 @@ import (
 )
 
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -Werror -I/usr/include -I./bpf" -target bpfel,bpfeb trace bpf/trace.bpf.c
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -Werror -I/usr/include -I./bpf" -target bpfel,bpfeb trace_legacy bpf/trace_legacy.bpf.c
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -Wall -Werror -I/usr/include -I./bpf -DBPF_NO_PRESERVE_ACCESS_INDEX" -target bpfel,bpfeb trace_legacy bpf/trace_legacy.bpf.c
 
 type EventType uint32
 
