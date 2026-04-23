@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.2.0] - 2026-04-23
 
 ### 重大变更
 - **双模式内核自适应**：运行时自动检测内核版本，≥ 5.8 使用现代模式（ringbuf + BTF/CO-RE），< 5.8 自动降级到兼容模式（perf buffer + legacy helper）。一套二进制同时覆盖 4.x ~ 6.x 内核。
