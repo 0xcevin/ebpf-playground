@@ -1,1 +1,2 @@
 ebpf-tracepoint
+*.o
