@@ -225,9 +225,63 @@ echo "=== 自检通过，可以运行 ==="
 
 ---
 
-## 4. 开发过程
+## 4. 缓冲区配置
 
-### 4.1 文件结构
+程序通过 `-buffer-level` 参数提供三级缓冲区大小，用于平衡内存占用与事件丢失风险。
+
+### 4.1 两种模式的缓冲机制差异
+
+| 模式 | 缓冲类型 | 数量 | 配置影响 | 当前配置显示 |
+|------|---------|------|---------|-------------|
+| **现代模式** (≥ 5.8) | `BPF_MAP_TYPE_RINGBUF` | **全局 1 个** | 直接设定总大小 | `ringbuf 大小: X MB` |
+| **兼容模式** (< 5.8) | `BPF_MAP_TYPE_PERF_EVENT_ARRAY` | **每 CPU 1 个** | 设定单 CPU 大小，总量 = 单 CPU × 核数 | `perf buffer 大小: X KB/CPU` |
+
+### 4.2 等级换算表
+
+| `-buffer-level` | 现代模式 (ringbuf) | 兼容模式 (perf buffer / CPU) | 适用场景 |
+|----------------|-------------------|---------------------------|---------|
+| **1** | 256 KB | 16 KB | 开发测试、低负载、内存敏感环境 |
+| **2** (默认) | **1 MB** | **64 KB** | 通用生产环境，大多数场景够用 |
+| **3** | 4 MB | 256 KB | 高频网络追踪、高并发服务器、防止 burst 丢事件 |
+
+### 4.3 如何选择
+
+- **事件频率低**（如仅追踪 `execve`）：level 1 即可，`execve` 触发频率通常远低于网络连接。
+- **普通生产环境**：level 2 默认，1 MB ringbuf 可缓冲约 3400 个事件，64 KB/CPU perf buffer 可缓冲约 200 个事件/CPU。
+- **高并发网络服务**（如 API 网关、数据库代理）：建议使用 **level 3**，或至少使用 `-net -buffer-level=3` 专门加大网络追踪的缓冲。
+
+> **注意**：缓冲区占用的是**锁定的内核内存**（计入 memlock），但等级 3 的 4 MB ringbuf 或 `256 KB × CPU核数` 的 perf buffer 对现代服务器来说仍然非常小。
+
+### 4.4 流量预警
+
+程序支持对单条网络连接的流量进行内核态累加，并在超过阈值时实时预警。
+
+```bash
+# 当任意连接的收发流量超过 10MB 时输出预警
+sudo ./ebpf-tracepoint -net -flow-threshold-mb 10
+```
+
+**预警输出示例**：
+
+```
+FLOW     845804 curl             ALERT=RX RX=1.00MB TX=0.09KB 90.130.70.73:80
+FLOW     1135   AliYunDunMonito  ALERT=TX RX=3.46KB TX=1.00MB 100.100.188.188:443
+```
+
+**实现原理**：
+- `connect` / `accept4` 建立连接时，在 eBPF map 中创建连接统计条目（key = pid+fd）。
+- 通过 `write` / `read` / `sendto` / `recvfrom` 的 enter/exit 配对，累加实际收发字节数。
+- `close` 时自动清理 map 条目，防止内存泄漏。
+- 超过阈值时发送一次 `FLOW` 事件（带 `warned` 标志避免重复上报）。
+
+**限制**：
+- `sendfile` / `splice` 等零拷贝路径不会被计入。
+
+---
+
+## 5. 开发过程
+
+### 5.1 文件结构
 
 ```
 .
@@ -244,7 +298,7 @@ echo "=== 自检通过，可以运行 ==="
 └── ebpf-tracepoint            # 最终独立二进制（静态链接）
 ```
 
-### 4.2 eBPF C 代码开发要点
+### 5.2 eBPF C 代码开发要点
 
 #### 现代版 (`trace.bpf.c`)
 
@@ -279,7 +333,7 @@ bpf_perf_event_output(ctx, &pb, BPF_F_CURRENT_CPU, &e, sizeof(e));
 
 使用 `bpf_probe_read()` / `bpf_probe_read_str()` 兼容老内核（无 `_user` 区分）。
 
-### 4.3 Go 加载器开发要点
+### 5.3 Go 加载器开发要点
 
 #### 4.3.1 go:generate 与 bpf2go
 
@@ -328,7 +382,7 @@ if attachments[i].err != nil {
 
 某些精简内核可能缺少个别 tracepoint，程序不会直接崩溃，而是继续挂载其他可用的事件源。
 
-### 4.4 构建流程
+### 5.4 构建流程
 
 ```bash
 # 1. 生成两套 eBPF → Go（由 go:generate 自动调用 bpf2go）
@@ -349,9 +403,9 @@ file ebpf-tracepoint
 
 ---
 
-## 5. 适配规则
+## 6. 适配规则
 
-### 5.1 CPU 架构适配规则
+### 6.1 CPU 架构适配规则
 
 当前二进制为 **编译时确定架构**，规则如下：
 
@@ -373,7 +427,7 @@ GOARCH=s390x CGO_ENABLED=0 go build -ldflags '-s -w' -o ebpf-tracepoint-s390x .
 
 > bpf2go 已通过 `-target bpfel,bpfeb` 预生成了大小端两份 eBPF 对象（现代版和兼容版各两份），交叉编译时 Go 会根据 `GOARCH` 自动选择正确的那份。
 
-### 5.2 添加新的 tracepoint 事件
+### 6.2 添加新的 tracepoint 事件
 
 如需扩展（如 `bind`、`listen`、`sendto`）：
 
@@ -386,7 +440,7 @@ GOARCH=s390x CGO_ENABLED=0 go build -ldflags '-s -w' -o ebpf-tracepoint-s390x .
 
 ---
 
-## 6. 快速开始
+## 7. 快速开始
 
 ```bash
 # 构建
@@ -400,6 +454,15 @@ sudo ./ebpf-tracepoint -execve
 
 # 仅追踪网络
 sudo ./ebpf-tracepoint -net
+
+# 使用小缓冲区（开发测试，低负载场景）
+sudo ./ebpf-tracepoint -buffer-level=1
+
+# 使用大缓冲区（高频网络连接，生产环境防丢事件）
+sudo ./ebpf-tracepoint -net -buffer-level=3
+
+# 开启流量预警：单连接收发超过 10MB 时报警
+sudo ./ebpf-tracepoint -net -flow-threshold-mb 10
 ```
 
 ### 示例输出
@@ -425,7 +488,7 @@ CONNECT  1234   curl                          127.0.0.1:8080
 ACCEPT   5678   python3          fd=4         127.0.0.1:54320
 ```
 
-### 6.1 GitHub Actions 自动发版
+### 7.1 GitHub Actions 自动发版
 
 推送以 `v` 开头的 tag 即可触发 Release CI，自动编译 `linux/amd64` 与 `linux/arm64` 两个架构的静态二进制，并发布到 GitHub Release：
 
@@ -438,7 +501,7 @@ git push origin v0.2.0
 
 ---
 
-## 7. 附录：核心参考
+## 8. 附录：核心参考
 
 - [cilium/ebpf Documentation](https://pkg.go.dev/github.com/cilium/ebpf)
 - [BPF CO-RE Reference Guide](https://nakryiko.com/posts/bpf-core-reference-guide/)

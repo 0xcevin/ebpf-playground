@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.3.1] - 2026-04-23
+
+### 新增
+- **兼容模式流量统计**：连接级流量统计与预警功能扩展至兼容模式（内核 < 5.8）。
+  - `bpf/trace_legacy.bpf.c` 完整移植现代模式的流量累加与预警逻辑。
+  - 覆盖 `write/read/sendto/recvfrom/close` 五组 tracepoint。
+  - 使用 `bpf_perf_event_output` 替代 ringbuf 发送预警事件。
+  - `legacy.go` 支持 `-flow-threshold-mb` 参数，与现代模式行为一致。
+
+### 文档
+- README.md 与 CHANGELOG.md 更新：流量预警不再限于现代模式。
+
+---
+
+## [0.3.0] - 2026-04-23
+
+### 新增
+- **动态缓冲区配置**：新增 `-buffer-level` 命令行参数，支持三级缓冲区大小（1=小, 2=中, 3=大）。
+  - 现代模式（ringbuf）：level 1=256 KB, level 2=1 MB, level 3=4 MB。
+  - 兼容模式（perf buffer）：level 1=16 KB/CPU, level 2=64 KB/CPU, level 3=256 KB/CPU。
+  - 运行时根据内核模式自动应用对应配置，无需重新编译 eBPF 对象。
+- **连接级流量统计与预警**：
+  - 内核态实时累加每个 socket 连接的 `rx_bytes` / `tx_bytes`。
+  - 新增 `-flow-threshold-mb` 参数，当单条连接的收发流量超过阈值时，实时发送 `FLOW` 预警事件。
+  - 覆盖 `write`/`read`/`sendto`/`recvfrom` 四类 IO 系统调用，适配绝大多数网络程序。
+  - 连接关闭（`close`）时自动清理统计 map，避免内存泄漏。
+  - 预警事件包含：进程名、PID、对端 IP:Port、累计 RX/TX 大小、预警类型（TX/RX）。
+  - **双模式支持**：现代模式（ringbuf）与兼容模式（perf buffer）均支持流量预警。
+
+### 文档
+- README.md 新增「缓冲区配置」章节，详细说明两种模式的缓冲机制差异、等级换算表及选型建议。
+
+---
+
 ## [0.2.5] - 2026-04-23
 
 ### 新增

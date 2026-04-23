@@ -9,11 +9,12 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/perf"
 )
 
-func runLegacy(attachExecve, attachNet bool) {
+func runLegacy(attachExecve, attachNet bool, perfPerCPUSize int, flowThresholdBytes uint64) {
 	// 加载 eBPF 兼容对象
 	spec, err := loadTrace_legacy()
 	if err != nil {
@@ -21,17 +22,16 @@ func runLegacy(attachExecve, attachNet bool) {
 		printEnvFail("请检查内核配置是否支持 eBPF，以及是否具备足够权限。")
 	}
 
-	// 按需剔除不需要的 program/map，避免在不支持某些 map 类型的老内核上
-	// 因为加载未使用的对象而失败（例如 3.10 不支持 hash map）
-	if !attachExecve {
-		delete(spec.Programs, "tracepoint__sys_enter_execve")
-		delete(spec.Programs, "tracepoint__sys_exit_execve")
-	}
-	if !attachNet {
-		delete(spec.Programs, "tracepoint__sys_enter_accept4")
-		delete(spec.Programs, "tracepoint__sys_exit_accept4")
-		delete(spec.Programs, "tracepoint__sys_enter_connect")
-		delete(spec.Maps, "accept4_sockaddr")
+	// 应用流量预警阈值
+	if flowThresholdBytes > 0 {
+		if cfgMap, ok := spec.Maps["config_map"]; ok {
+			cfgMap.Contents = []ebpf.MapKV{
+				{Key: uint32(0), Value: struct {
+					TxThreshold uint64
+					RxThreshold uint64
+				}{TxThreshold: flowThresholdBytes, RxThreshold: flowThresholdBytes}},
+			}
+		}
 	}
 
 	// 老内核（如 CentOS 7 的 3.10）不支持 Map BTF，清空 BTF 避免加载失败
@@ -75,6 +75,18 @@ func runLegacy(attachExecve, attachNet bool) {
 			attachDef{name: "sys_exit_accept4"},
 		)
 	}
+	// write/read/sendto/recvfrom/close 是流量统计的基础，始终挂载
+	attachments = append(attachments,
+		attachDef{name: "sys_enter_write"},
+		attachDef{name: "sys_exit_write"},
+		attachDef{name: "sys_enter_read"},
+		attachDef{name: "sys_exit_read"},
+		attachDef{name: "sys_enter_sendto"},
+		attachDef{name: "sys_exit_sendto"},
+		attachDef{name: "sys_enter_recvfrom"},
+		attachDef{name: "sys_exit_recvfrom"},
+		attachDef{name: "sys_enter_close"},
+	)
 
 	idx := 0
 	if attachExecve {
@@ -91,6 +103,25 @@ func runLegacy(attachExecve, attachNet bool) {
 		attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_exit_accept4", objs.TracepointSysExitAccept4, nil)
 		idx++
 	}
+	// write/read/sendto/recvfrom/close
+	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_enter_write", objs.TracepointSysEnterWrite, nil)
+	idx++
+	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_exit_write", objs.TracepointSysExitWrite, nil)
+	idx++
+	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_enter_read", objs.TracepointSysEnterRead, nil)
+	idx++
+	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_exit_read", objs.TracepointSysExitRead, nil)
+	idx++
+	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_enter_sendto", objs.TracepointSysEnterSendto, nil)
+	idx++
+	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_exit_sendto", objs.TracepointSysExitSendto, nil)
+	idx++
+	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_enter_recvfrom", objs.TracepointSysEnterRecvfrom, nil)
+	idx++
+	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_exit_recvfrom", objs.TracepointSysExitRecvfrom, nil)
+	idx++
+	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_enter_close", objs.TracepointSysEnterClose, nil)
+	idx++
 
 	attached := 0
 	for i := range attachments {
@@ -107,7 +138,7 @@ func runLegacy(attachExecve, attachNet bool) {
 	}
 
 	// Open perf buffer
-	rd, err := perf.NewReader(objs.Pb, 4096)
+	rd, err := perf.NewReader(objs.Pb, perfPerCPUSize)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to open perf buffer: %v\n", err)
 		os.Exit(1)

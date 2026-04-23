@@ -8,9 +8,34 @@ import (
 	_ "embed"
 	"fmt"
 	"io"
+	"structs"
 
 	"github.com/cilium/ebpf"
 )
+
+type trace_legacyConfig struct {
+	_           structs.HostLayout
+	TxThreshold uint64
+	RxThreshold uint64
+}
+
+type trace_legacyConnInfo struct {
+	_        structs.HostLayout
+	RxBytes  uint64
+	TxBytes  uint64
+	WarnedRx uint32
+	WarnedTx uint32
+	Daddr    uint32
+	Dport    uint16
+	Family   uint16
+	Comm     [16]int8
+}
+
+type trace_legacyConnKey struct {
+	_   structs.HostLayout
+	Pid uint32
+	Fd  uint32
+}
 
 // loadTrace_legacy returns the embedded CollectionSpec for trace_legacy.
 func loadTrace_legacy() (*ebpf.CollectionSpec, error) {
@@ -54,11 +79,20 @@ type trace_legacySpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type trace_legacyProgramSpecs struct {
-	TracepointSysEnterAccept4 *ebpf.ProgramSpec `ebpf:"tracepoint__sys_enter_accept4"`
-	TracepointSysEnterConnect *ebpf.ProgramSpec `ebpf:"tracepoint__sys_enter_connect"`
-	TracepointSysEnterExecve  *ebpf.ProgramSpec `ebpf:"tracepoint__sys_enter_execve"`
-	TracepointSysExitAccept4  *ebpf.ProgramSpec `ebpf:"tracepoint__sys_exit_accept4"`
-	TracepointSysExitExecve   *ebpf.ProgramSpec `ebpf:"tracepoint__sys_exit_execve"`
+	TracepointSysEnterAccept4  *ebpf.ProgramSpec `ebpf:"tracepoint__sys_enter_accept4"`
+	TracepointSysEnterClose    *ebpf.ProgramSpec `ebpf:"tracepoint__sys_enter_close"`
+	TracepointSysEnterConnect  *ebpf.ProgramSpec `ebpf:"tracepoint__sys_enter_connect"`
+	TracepointSysEnterExecve   *ebpf.ProgramSpec `ebpf:"tracepoint__sys_enter_execve"`
+	TracepointSysEnterRead     *ebpf.ProgramSpec `ebpf:"tracepoint__sys_enter_read"`
+	TracepointSysEnterRecvfrom *ebpf.ProgramSpec `ebpf:"tracepoint__sys_enter_recvfrom"`
+	TracepointSysEnterSendto   *ebpf.ProgramSpec `ebpf:"tracepoint__sys_enter_sendto"`
+	TracepointSysEnterWrite    *ebpf.ProgramSpec `ebpf:"tracepoint__sys_enter_write"`
+	TracepointSysExitAccept4   *ebpf.ProgramSpec `ebpf:"tracepoint__sys_exit_accept4"`
+	TracepointSysExitExecve    *ebpf.ProgramSpec `ebpf:"tracepoint__sys_exit_execve"`
+	TracepointSysExitRead      *ebpf.ProgramSpec `ebpf:"tracepoint__sys_exit_read"`
+	TracepointSysExitRecvfrom  *ebpf.ProgramSpec `ebpf:"tracepoint__sys_exit_recvfrom"`
+	TracepointSysExitSendto    *ebpf.ProgramSpec `ebpf:"tracepoint__sys_exit_sendto"`
+	TracepointSysExitWrite     *ebpf.ProgramSpec `ebpf:"tracepoint__sys_exit_write"`
 }
 
 // trace_legacyMapSpecs contains maps before they are loaded into the kernel.
@@ -66,6 +100,9 @@ type trace_legacyProgramSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type trace_legacyMapSpecs struct {
 	Accept4Sockaddr *ebpf.MapSpec `ebpf:"accept4_sockaddr"`
+	ConfigMap       *ebpf.MapSpec `ebpf:"config_map"`
+	ConnStatsMap    *ebpf.MapSpec `ebpf:"conn_stats_map"`
+	IoEnterArgs     *ebpf.MapSpec `ebpf:"io_enter_args"`
 	Pb              *ebpf.MapSpec `ebpf:"pb"`
 }
 
@@ -96,12 +133,18 @@ func (o *trace_legacyObjects) Close() error {
 // It can be passed to loadTrace_legacyObjects or ebpf.CollectionSpec.LoadAndAssign.
 type trace_legacyMaps struct {
 	Accept4Sockaddr *ebpf.Map `ebpf:"accept4_sockaddr"`
+	ConfigMap       *ebpf.Map `ebpf:"config_map"`
+	ConnStatsMap    *ebpf.Map `ebpf:"conn_stats_map"`
+	IoEnterArgs     *ebpf.Map `ebpf:"io_enter_args"`
 	Pb              *ebpf.Map `ebpf:"pb"`
 }
 
 func (m *trace_legacyMaps) Close() error {
 	return _Trace_legacyClose(
 		m.Accept4Sockaddr,
+		m.ConfigMap,
+		m.ConnStatsMap,
+		m.IoEnterArgs,
 		m.Pb,
 	)
 }
@@ -116,20 +159,38 @@ type trace_legacyVariables struct {
 //
 // It can be passed to loadTrace_legacyObjects or ebpf.CollectionSpec.LoadAndAssign.
 type trace_legacyPrograms struct {
-	TracepointSysEnterAccept4 *ebpf.Program `ebpf:"tracepoint__sys_enter_accept4"`
-	TracepointSysEnterConnect *ebpf.Program `ebpf:"tracepoint__sys_enter_connect"`
-	TracepointSysEnterExecve  *ebpf.Program `ebpf:"tracepoint__sys_enter_execve"`
-	TracepointSysExitAccept4  *ebpf.Program `ebpf:"tracepoint__sys_exit_accept4"`
-	TracepointSysExitExecve   *ebpf.Program `ebpf:"tracepoint__sys_exit_execve"`
+	TracepointSysEnterAccept4  *ebpf.Program `ebpf:"tracepoint__sys_enter_accept4"`
+	TracepointSysEnterClose    *ebpf.Program `ebpf:"tracepoint__sys_enter_close"`
+	TracepointSysEnterConnect  *ebpf.Program `ebpf:"tracepoint__sys_enter_connect"`
+	TracepointSysEnterExecve   *ebpf.Program `ebpf:"tracepoint__sys_enter_execve"`
+	TracepointSysEnterRead     *ebpf.Program `ebpf:"tracepoint__sys_enter_read"`
+	TracepointSysEnterRecvfrom *ebpf.Program `ebpf:"tracepoint__sys_enter_recvfrom"`
+	TracepointSysEnterSendto   *ebpf.Program `ebpf:"tracepoint__sys_enter_sendto"`
+	TracepointSysEnterWrite    *ebpf.Program `ebpf:"tracepoint__sys_enter_write"`
+	TracepointSysExitAccept4   *ebpf.Program `ebpf:"tracepoint__sys_exit_accept4"`
+	TracepointSysExitExecve    *ebpf.Program `ebpf:"tracepoint__sys_exit_execve"`
+	TracepointSysExitRead      *ebpf.Program `ebpf:"tracepoint__sys_exit_read"`
+	TracepointSysExitRecvfrom  *ebpf.Program `ebpf:"tracepoint__sys_exit_recvfrom"`
+	TracepointSysExitSendto    *ebpf.Program `ebpf:"tracepoint__sys_exit_sendto"`
+	TracepointSysExitWrite     *ebpf.Program `ebpf:"tracepoint__sys_exit_write"`
 }
 
 func (p *trace_legacyPrograms) Close() error {
 	return _Trace_legacyClose(
 		p.TracepointSysEnterAccept4,
+		p.TracepointSysEnterClose,
 		p.TracepointSysEnterConnect,
 		p.TracepointSysEnterExecve,
+		p.TracepointSysEnterRead,
+		p.TracepointSysEnterRecvfrom,
+		p.TracepointSysEnterSendto,
+		p.TracepointSysEnterWrite,
 		p.TracepointSysExitAccept4,
 		p.TracepointSysExitExecve,
+		p.TracepointSysExitRead,
+		p.TracepointSysExitRecvfrom,
+		p.TracepointSysExitSendto,
+		p.TracepointSysExitWrite,
 	)
 }
 

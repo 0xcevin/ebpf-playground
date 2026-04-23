@@ -29,16 +29,23 @@ const (
 )
 
 type Event struct {
-	Pid  uint32
-	Type uint32
-	Comm [16]byte
-	Data [256]byte
-	Ret  int64
+	Pid     uint32
+	Type    uint32
+	Comm    [16]byte
+	Data    [256]byte
+	Ret     int64
+	RxBytes uint64
+	TxBytes uint64
+	Daddr   uint32
+	Dport   uint16
+	Family  uint16
 }
 
 var (
-	flagExecve bool
-	flagNet    bool
+	flagExecve        bool
+	flagNet           bool
+	flagBufferLevel   int
+	flagFlowThreshold int
 
 	// 编译时通过 -ldflags -X 注入
 	Version     = "dev"
@@ -52,6 +59,8 @@ var (
 func init() {
 	flag.BoolVar(&flagExecve, "execve", false, "仅追踪 execve 系统调用")
 	flag.BoolVar(&flagNet, "net", false, "仅追踪网络相关系统调用 (connect, accept4)")
+	flag.IntVar(&flagBufferLevel, "buffer-level", 2, "事件缓冲区大小等级: 1=小(低负载/开发), 2=中(默认/生产), 3=大(高频网络)")
+	flag.IntVar(&flagFlowThreshold, "flow-threshold-mb", 0, "流量预警阈值(MB): 当单条连接的收发流量超过此值时触发预警, 0=关闭")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n\n", path.Base(os.Args[0]))
@@ -137,14 +146,46 @@ func main() {
 	fmt.Printf("追踪模式: %s\n", modeStr)
 	fmt.Println()
 
+	// 计算缓冲区大小
+	ringbufSize, perfPerCPUSize := calcBufferSizes(flagBufferLevel)
+	flowThresholdBytes := uint64(flagFlowThreshold) * 1024 * 1024
+	if flagFlowThreshold > 0 {
+		fmt.Printf("[CONFIG] 流量预警阈值: %d MB\n", flagFlowThreshold)
+	}
+
 	// 根据内核版本选择模式
 	if kverOK {
 		fmt.Println("[MODE] 内核 >= 5.8，启用现代模式 (ringbuf + BTF)")
-		runModern(attachExecve, attachNet)
+		if ringbufSize >= 1024*1024 {
+			fmt.Printf("[CONFIG] ringbuf 大小: %d MB (level=%d)\n", ringbufSize/1024/1024, flagBufferLevel)
+		} else {
+			fmt.Printf("[CONFIG] ringbuf 大小: %d KB (level=%d)\n", ringbufSize/1024, flagBufferLevel)
+		}
+		runModern(attachExecve, attachNet, ringbufSize, flowThresholdBytes)
 	} else {
 		fmt.Println("[MODE] 内核 < 5.8，启用兼容模式 (perf buffer)")
-		runLegacy(attachExecve, attachNet)
+		fmt.Printf("[CONFIG] perf buffer 大小: %d KB/CPU (level=%d)\n", perfPerCPUSize/1024, flagBufferLevel)
+		runLegacy(attachExecve, attachNet, perfPerCPUSize, flowThresholdBytes)
 	}
+}
+
+func calcBufferSizes(level int) (ringbufSize uint32, perfPerCPUSize int) {
+	switch level {
+	case 1:
+		ringbufSize = 256 * 1024       // 256 KB
+		perfPerCPUSize = 16 * 1024     // 16 KB / CPU
+	case 3:
+		ringbufSize = 4 * 1024 * 1024  // 4 MB
+		perfPerCPUSize = 256 * 1024    // 256 KB / CPU
+	default:
+		// level 2 或其他非法值均使用默认中等配置
+		if level != 2 {
+			fmt.Fprintf(os.Stderr, "[WARN] 未知的 buffer-level=%d，使用默认 level=2\n", level)
+		}
+		ringbufSize = 1024 * 1024      // 1 MB
+		perfPerCPUSize = 64 * 1024     // 64 KB / CPU
+	}
+	return
 }
 
 func printEnvFail(hint string) {
@@ -227,6 +268,31 @@ func printEvent(e Event) {
 	case EventAccept4Exit:
 		addrStr := parseSockaddr(e.Data[:])
 		fmt.Printf("%-8s %-6d %-16s fd=%-7d %s\n", "ACCEPT", e.Pid, comm, e.Ret, addrStr)
+	case 5:
+		alertType := "TX"
+		if e.Ret == 2 {
+			alertType = "RX"
+		}
+		addrStr := ""
+		if e.Family == syscall.AF_INET {
+			ip := net.IP(make([]byte, 4))
+			binary.LittleEndian.PutUint32(ip, e.Daddr)
+			port := binary.BigEndian.Uint16([]byte{byte(e.Dport), byte(e.Dport >> 8)})
+			addrStr = fmt.Sprintf("%s:%d", ip.String(), port)
+		} else if e.Family == syscall.AF_INET6 {
+			port := binary.BigEndian.Uint16([]byte{byte(e.Dport), byte(e.Dport >> 8)})
+			addrStr = fmt.Sprintf("[IPv6]:%d", port)
+		}
+		rxStr := fmt.Sprintf("%.2fKB", float64(e.RxBytes)/1024)
+		if e.RxBytes >= 1024*1024 {
+			rxStr = fmt.Sprintf("%.2fMB", float64(e.RxBytes)/1024/1024)
+		}
+		txStr := fmt.Sprintf("%.2fKB", float64(e.TxBytes)/1024)
+		if e.TxBytes >= 1024*1024 {
+			txStr = fmt.Sprintf("%.2fMB", float64(e.TxBytes)/1024/1024)
+		}
+		fmt.Printf("%-8s %-6d %-16s %-12s ALERT=%s RX=%s TX=%s %s\n",
+			"FLOW", e.Pid, comm, "", alertType, rxStr, txStr, addrStr)
 	default:
 		fmt.Printf("%-8s %-6d %-16s %-12d %x\n", "UNKNOWN", e.Pid, comm, e.Ret, e.Data[:16])
 	}

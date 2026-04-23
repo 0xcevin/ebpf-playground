@@ -9,11 +9,12 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 )
 
-func runModern(attachExecve, attachNet bool) {
+func runModern(attachExecve, attachNet bool, ringbufSize uint32, flowThresholdBytes uint64) {
 	// BTF 检查（仅现代模式需要）
 	if _, err := os.Stat("/sys/kernel/btf/vmlinux"); err != nil {
 		fmt.Println("[FAIL] BTF 未开启 (/sys/kernel/btf/vmlinux 不存在)。")
@@ -32,16 +33,23 @@ func runModern(attachExecve, attachNet bool) {
 		printEnvFail("请检查内核配置是否支持 eBPF，以及是否具备足够权限。")
 	}
 
-	// 按需剔除不需要的 program/map
-	if !attachExecve {
-		delete(spec.Programs, "tracepoint__sys_enter_execve")
-		delete(spec.Programs, "tracepoint__sys_exit_execve")
+	// 应用动态缓冲区大小
+	if ringbufSize > 0 {
+		if m, ok := spec.Maps["rb"]; ok {
+			m.MaxEntries = ringbufSize
+		}
 	}
-	if !attachNet {
-		delete(spec.Programs, "tracepoint__sys_enter_accept4")
-		delete(spec.Programs, "tracepoint__sys_exit_accept4")
-		delete(spec.Programs, "tracepoint__sys_enter_connect")
-		delete(spec.Maps, "accept4_sockaddr")
+
+	// 应用流量预警阈值
+	if flowThresholdBytes > 0 {
+		if cfgMap, ok := spec.Maps["config_map"]; ok {
+			cfgMap.Contents = []ebpf.MapKV{
+				{Key: uint32(0), Value: struct {
+					TxThreshold uint64
+					RxThreshold uint64
+				}{TxThreshold: flowThresholdBytes, RxThreshold: flowThresholdBytes}},
+			}
+		}
 	}
 
 	objs := traceObjects{}
@@ -79,6 +87,18 @@ func runModern(attachExecve, attachNet bool) {
 			attachDef{name: "sys_exit_accept4"},
 		)
 	}
+	// write/read/sendto/recvfrom/close 是流量统计的基础，始终挂载
+	attachments = append(attachments,
+		attachDef{name: "sys_enter_write"},
+		attachDef{name: "sys_exit_write"},
+		attachDef{name: "sys_enter_read"},
+		attachDef{name: "sys_exit_read"},
+		attachDef{name: "sys_enter_sendto"},
+		attachDef{name: "sys_exit_sendto"},
+		attachDef{name: "sys_enter_recvfrom"},
+		attachDef{name: "sys_exit_recvfrom"},
+		attachDef{name: "sys_enter_close"},
+	)
 
 	idx := 0
 	if attachExecve {
@@ -95,6 +115,25 @@ func runModern(attachExecve, attachNet bool) {
 		attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_exit_accept4", objs.TracepointSysExitAccept4, nil)
 		idx++
 	}
+	// write/read/sendto/recvfrom/close
+	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_enter_write", objs.TracepointSysEnterWrite, nil)
+	idx++
+	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_exit_write", objs.TracepointSysExitWrite, nil)
+	idx++
+	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_enter_read", objs.TracepointSysEnterRead, nil)
+	idx++
+	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_exit_read", objs.TracepointSysExitRead, nil)
+	idx++
+	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_enter_sendto", objs.TracepointSysEnterSendto, nil)
+	idx++
+	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_exit_sendto", objs.TracepointSysExitSendto, nil)
+	idx++
+	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_enter_recvfrom", objs.TracepointSysEnterRecvfrom, nil)
+	idx++
+	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_exit_recvfrom", objs.TracepointSysExitRecvfrom, nil)
+	idx++
+	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_enter_close", objs.TracepointSysEnterClose, nil)
+	idx++
 
 	attached := 0
 	for i := range attachments {
