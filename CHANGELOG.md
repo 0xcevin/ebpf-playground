@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.2] - 2026-04-23
+
+### 修复
+- **CentOS 7 memlock 解除失败**：在 CentOS 7 (3.10.0-862) 上，`rlimit.RemoveMemlock()` 报错 `unexpected error detecting memory cgroup accounting: function not implemented`。
+  - 根因：`cilium/ebpf` 的 `RemoveMemlock` 在内部检测 cgroup 内存会计时调用了老内核不支持的系统调用。
+  - 修复：`RemoveMemlock` 失败时，降级到 `unix.Getrlimit` + `unix.Setrlimit` 手动解除 memlock 限制。
+
+---
+
 ## [0.2.1] - 2026-04-23
 
 ### 修复
