@@ -416,6 +416,17 @@ sudo ./ebpf-tracepoint
 # ACCEPT   5678   python3          fd=4         127.0.0.1:54320
 ```
 
+### 6.1 GitHub Actions 自动发版
+
+推送以 `v` 开头的 tag 即可触发 Release CI，自动编译 `linux/amd64` 与 `linux/arm64` 两个架构的静态二进制，并发布到 GitHub Release：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+也可在仓库的 **Actions → Release → Run workflow** 中手动触发。
+
 ---
 
 ## 7. 附录：核心参考

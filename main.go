@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"flag"
 	"fmt"
 	"net"
 	"os"
 	"os/signal"
+	"path"
+	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/cilium/ebpf/link"
@@ -34,37 +38,130 @@ type Event struct {
 	Ret  int64
 }
 
+var (
+	flagExecve bool
+	flagNet    bool
+)
+
+func init() {
+	flag.BoolVar(&flagExecve, "execve", false, "仅追踪 execve 系统调用")
+	flag.BoolVar(&flagNet, "net", false, "仅追踪网络相关系统调用 (connect, accept4)")
+
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n\n", path.Base(os.Args[0]))
+		fmt.Fprintf(os.Stderr, "基于 eBPF tracepoint 的轻量级系统调用追踪工具。\n\n")
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		flag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\n示例:\n")
+		fmt.Fprintf(os.Stderr, "  sudo %s           # 追踪所有事件\n", path.Base(os.Args[0]))
+		fmt.Fprintf(os.Stderr, "  sudo %s -execve   # 仅追踪 execve\n", path.Base(os.Args[0]))
+		fmt.Fprintf(os.Stderr, "  sudo %s -net      # 仅追踪网络\n", path.Base(os.Args[0]))
+	}
+}
+
 func main() {
-	if err := rlimit.RemoveMemlock(); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to remove memlock limit: %v\n", err)
-		os.Exit(1)
+	flag.Parse()
+
+	fmt.Println("=== eBPF Tracepoint 环境检测 ===")
+
+	// 1. 检查内核版本
+	kver, kverOK := checkKernelVersion()
+	fmt.Printf("内核版本: %s\n", kver)
+	if !kverOK {
+		fmt.Println("[FAIL] 内核版本 < 5.8，不支持 ringbuf。")
+		printEnvFail("请升级至 Linux 5.8+ 内核。")
+	} else {
+		fmt.Println("[OK] 内核支持 ringbuf (>= 5.8)")
 	}
 
+	// 2. 检查 BTF
+	if _, err := os.Stat("/sys/kernel/btf/vmlinux"); err != nil {
+		fmt.Println("[FAIL] BTF 未开启 (/sys/kernel/btf/vmlinux 不存在)。")
+		printEnvFail("请使用开启 BTF 的内核（CONFIG_DEBUG_INFO_BTF=y）。")
+	} else {
+		fmt.Println("[OK] BTF 已开启")
+	}
+
+	// 3. 检查权限
+	if os.Geteuid() != 0 {
+		fmt.Println("[WARN] 当前非 root 用户。加载 eBPF 通常需要 root 或 CAP_BPF + CAP_PERFMON + CAP_SYS_ADMIN。")
+		// 非 root 但具备 CAP_BPF 理论上也可以，继续尝试加载；若加载失败再退出。
+	} else {
+		fmt.Println("[OK] 当前为 root 用户")
+	}
+
+	// 4. 解除 memlock
+	if err := rlimit.RemoveMemlock(); err != nil {
+		fmt.Fprintf(os.Stderr, "[FAIL] 无法解除 memlock 限制: %v\n", err)
+		printEnvFail("请确保有足够的权限（root 或 CAP_SYS_RESOURCE）。")
+	}
+	fmt.Println("[OK] memlock 限制已解除")
+
+	// 5. 加载 eBPF 对象
 	objs := traceObjects{}
 	if err := loadTraceObjects(&objs, nil); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to load eBPF objects: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(os.Stderr, "[FAIL] 加载 eBPF 对象失败: %v\n", err)
+		printEnvFail("请检查内核配置是否支持 eBPF，以及是否具备足够权限。")
 	}
 	defer objs.Close()
+	fmt.Println("[OK] eBPF 对象加载成功")
 
-	// Attach tracepoints. Failure of individual tracepoints is non-fatal.
-	attachments := []struct {
-		name   string
-		l      link.Link
-		err    error
-	}{
-		{"sys_enter_execve", nil, nil},
-		{"sys_exit_execve", nil, nil},
-		{"sys_enter_connect", nil, nil},
-		{"sys_enter_accept4", nil, nil},
-		{"sys_exit_accept4", nil, nil},
+	fmt.Println("===================================")
+	fmt.Println()
+
+	modeStr := "全部"
+	if flagExecve && !flagNet {
+		modeStr = "仅 execve"
+	} else if flagNet && !flagExecve {
+		modeStr = "仅网络 (connect, accept4)"
+	}
+	fmt.Printf("追踪模式: %s\n", modeStr)
+	fmt.Println()
+
+	// 确定要 attach 的事件：默认全部；若指定 -execve / -net，则按指定来
+	attachExecve := true
+	attachNet := true
+	if flagExecve || flagNet {
+		attachExecve = flagExecve
+		attachNet = flagNet
 	}
 
-	attachments[0].l, attachments[0].err = link.Tracepoint("syscalls", "sys_enter_execve", objs.TracepointSysEnterExecve, nil)
-	attachments[1].l, attachments[1].err = link.Tracepoint("syscalls", "sys_exit_execve", objs.TracepointSysExitExecve, nil)
-	attachments[2].l, attachments[2].err = link.Tracepoint("syscalls", "sys_enter_connect", objs.TracepointSysEnterConnect, nil)
-	attachments[3].l, attachments[3].err = link.Tracepoint("syscalls", "sys_enter_accept4", objs.TracepointSysEnterAccept4, nil)
-	attachments[4].l, attachments[4].err = link.Tracepoint("syscalls", "sys_exit_accept4", objs.TracepointSysExitAccept4, nil)
+	type attachDef struct {
+		name string
+		l    link.Link
+		err  error
+	}
+
+	var attachments []attachDef
+	if attachExecve {
+		attachments = append(attachments,
+			attachDef{name: "sys_enter_execve"},
+			attachDef{name: "sys_exit_execve"},
+		)
+	}
+	if attachNet {
+		attachments = append(attachments,
+			attachDef{name: "sys_enter_connect"},
+			attachDef{name: "sys_enter_accept4"},
+			attachDef{name: "sys_exit_accept4"},
+		)
+	}
+
+	idx := 0
+	if attachExecve {
+		attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_enter_execve", objs.TracepointSysEnterExecve, nil)
+		idx++
+		attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_exit_execve", objs.TracepointSysExitExecve, nil)
+		idx++
+	}
+	if attachNet {
+		attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_enter_connect", objs.TracepointSysEnterConnect, nil)
+		idx++
+		attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_enter_accept4", objs.TracepointSysEnterAccept4, nil)
+		idx++
+		attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_exit_accept4", objs.TracepointSysExitAccept4, nil)
+		idx++
+	}
 
 	attached := 0
 	for i := range attachments {
@@ -117,6 +214,34 @@ func main() {
 
 		printEvent(event)
 	}
+}
+
+func printEnvFail(hint string) {
+	fmt.Println()
+	fmt.Println("===================================")
+	fmt.Println("抱歉，当前环境不满足运行条件。")
+	if hint != "" {
+		fmt.Printf("提示: %s\n", hint)
+	}
+	fmt.Println("===================================")
+	os.Exit(1)
+}
+
+func checkKernelVersion() (string, bool) {
+	data, err := os.ReadFile("/proc/sys/kernel/osrelease")
+	if err != nil {
+		return "unknown", false
+	}
+	kver := strings.TrimSpace(string(data))
+	parts := strings.Split(kver, ".")
+	if len(parts) >= 2 {
+		major, _ := strconv.Atoi(parts[0])
+		minor, _ := strconv.Atoi(parts[1])
+		if major > 5 || (major == 5 && minor >= 8) {
+			return kver, true
+		}
+	}
+	return kver, false
 }
 
 func printEvent(e Event) {
