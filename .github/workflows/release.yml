@@ -36,16 +36,49 @@ jobs:
       - name: Generate eBPF objects
         run: go generate ./...
 
-      - name: Build binary
+      - name: Collect build metadata
+        id: meta
+        run: |
+          echo "build_time=$(date -u '+%Y-%m-%d_%H:%M:%S')" >> "$GITHUB_OUTPUT"
+          echo "build_kernel=$(uname -r)" >> "$GITHUB_OUTPUT"
+          echo "go_version=$(go version | cut -d' ' -f3)" >> "$GITHUB_OUTPUT"
+
+      - name: Build release binary
         run: |
           CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
-            go build -ldflags '-s -w' -o ebpf-tracepoint-${{ matrix.goos }}-${{ matrix.goarch }} .
+            go build -ldflags "-s -w \
+              -X main.Version=${{ github.ref_name }} \
+              -X main.BuildTime=${{ steps.meta.outputs.build_time }} \
+              -X main.BuildOS=${{ matrix.goos }} \
+              -X main.BuildArch=${{ matrix.goarch }} \
+              -X main.BuildKernel=${{ steps.meta.outputs.build_kernel }} \
+              -X main.GoVersion=${{ steps.meta.outputs.go_version }}" \
+            -o ebpf-tracepoint-${{ matrix.goos }}-${{ matrix.goarch }} .
 
-      - name: Upload artifact
+      - name: Build debug binary
+        run: |
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            go build -ldflags "\
+              -X main.Version=${{ github.ref_name }} \
+              -X main.BuildTime=${{ steps.meta.outputs.build_time }} \
+              -X main.BuildOS=${{ matrix.goos }} \
+              -X main.BuildArch=${{ matrix.goarch }} \
+              -X main.BuildKernel=${{ steps.meta.outputs.build_kernel }} \
+              -X main.GoVersion=${{ steps.meta.outputs.go_version }}" \
+            -o ebpf-tracepoint-debug-${{ matrix.goos }}-${{ matrix.goarch }} .
+
+      - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
           name: ebpf-tracepoint-${{ matrix.goos }}-${{ matrix.goarch }}
           path: ebpf-tracepoint-${{ matrix.goos }}-${{ matrix.goarch }}
+          retention-days: 1
+
+      - name: Upload debug artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ebpf-tracepoint-debug-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: ebpf-tracepoint-debug-${{ matrix.goos }}-${{ matrix.goarch }}
           retention-days: 1
 
   release:

@@ -39,6 +39,14 @@ type Event struct {
 var (
 	flagExecve bool
 	flagNet    bool
+
+	// 编译时通过 -ldflags -X 注入
+	Version     = "dev"
+	BuildTime   = "unknown"
+	BuildOS     = "unknown"
+	BuildArch   = "unknown"
+	BuildKernel = "unknown"
+	GoVersion   = "unknown"
 )
 
 func init() {
@@ -64,6 +72,11 @@ func main() {
 
 	// 1. 检查内核版本
 	kver, kverOK := checkKernelVersion()
+	fmt.Printf("版本: %s\n", Version)
+	fmt.Printf("编译时间: %s\n", BuildTime)
+	fmt.Printf("编译环境: %s/%s\n", BuildOS, BuildArch)
+	fmt.Printf("编译内核: %s\n", BuildKernel)
+	fmt.Printf("Go 版本: %s\n", GoVersion)
 	fmt.Printf("内核版本: %s\n", kver)
 	fmt.Printf("系统版本: %s\n", getOSVersion())
 
