@@ -15,8 +15,20 @@ import (
 
 func runLegacy(attachExecve, attachNet bool) {
 	// 加载 eBPF 兼容对象
+	spec, err := loadTrace_legacy()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[FAIL] 加载 eBPF 兼容对象失败: %v\n", err)
+		printEnvFail("请检查内核配置是否支持 eBPF，以及是否具备足够权限。")
+	}
+
+	// 老内核（如 CentOS 7 的 3.10）不支持 Map BTF，清空 BTF 避免加载失败
+	for _, m := range spec.Maps {
+		m.Key = nil
+		m.Value = nil
+	}
+
 	objs := trace_legacyObjects{}
-	if err := loadTrace_legacyObjects(&objs, nil); err != nil {
+	if err := spec.LoadAndAssign(&objs, nil); err != nil {
 		fmt.Fprintf(os.Stderr, "[FAIL] 加载 eBPF 兼容对象失败: %v\n", err)
 		printEnvFail("请检查内核配置是否支持 eBPF，以及是否具备足够权限。")
 	}
