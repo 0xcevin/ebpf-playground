@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/cilium/ebpf/rlimit"
+	"golang.org/x/sys/unix"
 )
 
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -Werror -I/usr/include -I./bpf" -target bpfel,bpfeb trace bpf/trace.bpf.c
@@ -74,10 +75,22 @@ func main() {
 
 	// 3. 解除 memlock
 	if err := rlimit.RemoveMemlock(); err != nil {
-		fmt.Fprintf(os.Stderr, "[FAIL] 无法解除 memlock 限制: %v\n", err)
-		printEnvFail("请确保有足够的权限（root 或 CAP_SYS_RESOURCE）。")
+		// 老内核（如 CentOS 7 的 3.10）可能不支持 RemoveMemlock 内部的 cgroup 检测，降级到手动设置
+		fmt.Fprintf(os.Stderr, "[WARN] rlimit.RemoveMemlock 失败: %v，尝试手动设置...\n", err)
+		var rlim unix.Rlimit
+		if err := unix.Getrlimit(unix.RLIMIT_MEMLOCK, &rlim); err != nil {
+			fmt.Fprintf(os.Stderr, "[FAIL] 无法获取 memlock 限制: %v\n", err)
+			printEnvFail("请确保有足够的权限（root 或 CAP_SYS_RESOURCE）。")
+		}
+		rlim.Cur = rlim.Max
+		if err := unix.Setrlimit(unix.RLIMIT_MEMLOCK, &rlim); err != nil {
+			fmt.Fprintf(os.Stderr, "[FAIL] 无法设置 memlock 限制: %v\n", err)
+			printEnvFail("请确保有足够的权限（root 或 CAP_SYS_RESOURCE）。")
+		}
+		fmt.Println("[OK] memlock 限制已手动解除")
+	} else {
+		fmt.Println("[OK] memlock 限制已解除")
 	}
-	fmt.Println("[OK] memlock 限制已解除")
 
 	fmt.Println("===================================")
 	fmt.Println()
