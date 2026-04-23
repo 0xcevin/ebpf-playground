@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.5] - 2026-04-23
+
+### 新增
+- **环境检测增强**：启动时同时打印内核版本与系统版本（读取 `/etc/os-release`）。
+- **按需加载 eBPF 对象**：根据 `-execve` / `-net` 参数，在加载前从 CollectionSpec 中剔除不需要的 program 和 map，避免老内核因未使用对象而加载失败。
+- **bpf syscall 可用性探测**：运行时探测 `bpf(2)` 系统调用是否实现，若返回 `ENOSYS` 则提前退出并给出友好提示。
+- **最低内核版本拦截**：明确不支持低于 Linux 3.10 的内核；所有版本提示统一为 **4.7+**。
+
+### 文档
+- 更新 README.md 与 CHANGELOG.md 的发行版支持矩阵，覆盖 CentOS/RHEL、Rocky Linux、AlmaLinux、Oracle Linux、Ubuntu、Debian。
+- 明确说明：3.10 内核仅限 **RHEL 系 7.6+ 回移植版本**支持，上游 3.10 不支持。
+
+---
+
 ## [0.2.3] - 2026-04-23
 
 ### 修复
