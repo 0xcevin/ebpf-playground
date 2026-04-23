@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.1] - 2026-04-23
+
+### 修复
+- **兼容模式加载失败**：在 Oracle Linux 8 (UEK 5.4.x)、CentOS 7/8 等无 BTF 内核上，兼容模式报错 `apply CO-RE relocations: no BTF found`。
+  - 根因：`bpf2go` 编译 `trace_legacy.bpf.c` 时，`vmlinux.h` 中的 `#pragma clang attribute push (__attribute__((preserve_access_index)))` 导致 `.BTF.ext` 生成 CO-RE 重定位记录。
+  - 修复：为兼容版编译添加 `-DBPF_NO_PRESERVE_ACCESS_INDEX`，禁用 `preserve_access_index` 属性。`.BTF.ext` 中不再包含 `core_reloc` 段，但保留 `.BTF` 段用于 `cilium/ebpf` 解析 BTF-style map 定义。
+
+---
+
 ## [0.2.0] - 2026-04-23
 
 ### 重大变更
