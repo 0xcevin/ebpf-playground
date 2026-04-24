@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"reflect"
 	"strings"
 	"syscall"
 
@@ -36,9 +37,15 @@ func runLegacy(attachExecve, attachNet bool, perfPerCPUSize int, flowThresholdBy
 	}
 
 	// 老内核（如 CentOS 7 的 3.10）不支持 Map BTF，清空 BTF 避免加载失败
+	// 使用反射兼容不同版本的 cilium/ebpf（v0.8.x 的 MapSpec 没有 Key/Value 字段）
 	for _, m := range spec.Maps {
-		m.Key = nil
-		m.Value = nil
+		rv := reflect.ValueOf(m).Elem()
+		if f := rv.FieldByName("Key"); f.IsValid() {
+			f.Set(reflect.Zero(f.Type()))
+		}
+		if f := rv.FieldByName("Value"); f.IsValid() {
+			f.Set(reflect.Zero(f.Type()))
+		}
 	}
 
 	objs := trace_legacyObjects{}
@@ -91,43 +98,43 @@ func runLegacy(attachExecve, attachNet bool, perfPerCPUSize int, flowThresholdBy
 
 	idx := 0
 	if attachExecve {
-		attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_enter_execve", objs.TracepointSysEnterExecve, nil)
+		attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_enter_execve", objs.TracepointSysEnterExecve)
 		if attachments[idx].err != nil {
-			attachments[idx].l, attachments[idx].err = link.Kprobe("sys_execve", objs.KprobeSysExecve, nil)
+			attachments[idx].l, attachments[idx].err = link.Kprobe("sys_execve", objs.KprobeSysExecve)
 		}
 		idx++
-		attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_exit_execve", objs.TracepointSysExitExecve, nil)
+		attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_exit_execve", objs.TracepointSysExitExecve)
 		if attachments[idx].err != nil {
-			attachments[idx].l, attachments[idx].err = link.Kretprobe("sys_execve", objs.KretprobeSysExecve, nil)
+			attachments[idx].l, attachments[idx].err = link.Kretprobe("sys_execve", objs.KretprobeSysExecve)
 		}
 		idx++
 	}
 	if attachNet {
-		attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_enter_connect", objs.TracepointSysEnterConnect, nil)
+		attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_enter_connect", objs.TracepointSysEnterConnect)
 		idx++
-		attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_enter_accept4", objs.TracepointSysEnterAccept4, nil)
+		attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_enter_accept4", objs.TracepointSysEnterAccept4)
 		idx++
-		attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_exit_accept4", objs.TracepointSysExitAccept4, nil)
+		attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_exit_accept4", objs.TracepointSysExitAccept4)
 		idx++
 	}
 	// write/read/sendto/recvfrom/close
-	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_enter_write", objs.TracepointSysEnterWrite, nil)
+	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_enter_write", objs.TracepointSysEnterWrite)
 	idx++
-	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_exit_write", objs.TracepointSysExitWrite, nil)
+	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_exit_write", objs.TracepointSysExitWrite)
 	idx++
-	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_enter_read", objs.TracepointSysEnterRead, nil)
+	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_enter_read", objs.TracepointSysEnterRead)
 	idx++
-	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_exit_read", objs.TracepointSysExitRead, nil)
+	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_exit_read", objs.TracepointSysExitRead)
 	idx++
-	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_enter_sendto", objs.TracepointSysEnterSendto, nil)
+	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_enter_sendto", objs.TracepointSysEnterSendto)
 	idx++
-	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_exit_sendto", objs.TracepointSysExitSendto, nil)
+	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_exit_sendto", objs.TracepointSysExitSendto)
 	idx++
-	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_enter_recvfrom", objs.TracepointSysEnterRecvfrom, nil)
+	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_enter_recvfrom", objs.TracepointSysEnterRecvfrom)
 	idx++
-	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_exit_recvfrom", objs.TracepointSysExitRecvfrom, nil)
+	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_exit_recvfrom", objs.TracepointSysExitRecvfrom)
 	idx++
-	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_enter_close", objs.TracepointSysEnterClose, nil)
+	attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_enter_close", objs.TracepointSysEnterClose)
 	idx++
 
 	attached := 0
