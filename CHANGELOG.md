@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.6] - 2026-04-24
+
+### 修复
+- **RHEL 9.4 / AlmaLinux 9.4 attach permission denied**：彻底修复 `cannot create bpf perf link: permission denied`。
+  - 根因：`cilium/ebpf v0.21.0` 强制使用 `BPF_LINK_CREATE` attach tracepoint，而 RHEL 9.4 内核在该路径返回 `EPERM` 且不会自动回退。
+  - 方案：降级 `cilium/ebpf` 至 `v0.8.1`，该版本使用旧式 `ioctl(PERF_EVENT_IOC_SET_BPF)` attach，不受 `BPF_LINK_CREATE` 限制。
+  - `modern.go` / `legacy.go`：适配 v0.8.1 API，移除 `link.Tracepoint` / `link.Kprobe` / `link.Kretprobe` 的 opts 参数。
+  - `legacy.go`：使用反射兼容 `MapSpec.Key` / `MapSpec.Value` 字段在 v0.8.1 中的缺失。
+- **CI 编译失败（v0.3.5）**：v0.8.1 的 `bpf2go` 不支持 `amd64,arm64` target。`main.go` 的 `go:generate` 锁定 `bpf2go@v0.21.0`，将代码生成工具与运行时库解耦。
+
+### 文档
+- 新增 `docs/releases/v0.3.6.md`。
+- CHANGELOG.md 追加 v0.3.6 条目。
+
+---
+
 ## [0.3.5] - 2026-04-24
 
 ### 修复
