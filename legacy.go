@@ -91,8 +91,14 @@ func runLegacy(attachExecve, attachNet bool, perfPerCPUSize int, flowThresholdBy
 	idx := 0
 	if attachExecve {
 		attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_enter_execve", objs.TracepointSysEnterExecve, nil)
+		if attachments[idx].err != nil {
+			attachments[idx].l, attachments[idx].err = link.Kprobe("sys_execve", objs.KprobeSysExecve, nil)
+		}
 		idx++
 		attachments[idx].l, attachments[idx].err = link.Tracepoint("syscalls", "sys_exit_execve", objs.TracepointSysExitExecve, nil)
+		if attachments[idx].err != nil {
+			attachments[idx].l, attachments[idx].err = link.Kretprobe("sys_execve", objs.KretprobeSysExecve, nil)
+		}
 		idx++
 	}
 	if attachNet {

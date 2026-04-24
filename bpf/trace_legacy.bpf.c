@@ -414,4 +414,35 @@ int tracepoint__sys_enter_close(struct trace_event_raw_sys_enter *ctx)
 	return 0;
 }
 
+/* Fallback kprobes for kernels without syscall tracepoints (e.g. CentOS 7 3.10) */
+SEC("kprobe/sys_execve")
+int kprobe__sys_execve(struct pt_regs *ctx)
+{
+	struct event e = {};
+
+	e.type = EVENT_EXECVE_ENTER;
+	e.pid = bpf_get_current_pid_tgid() >> 32;
+	bpf_get_current_comm(&e.comm, sizeof(e.comm));
+
+	const char *filename = (const char *)PT_REGS_PARM1(ctx);
+	bpf_probe_read_str(&e.data, sizeof(e.data), (void *)filename);
+
+	bpf_perf_event_output(ctx, &pb, BPF_F_CURRENT_CPU, &e, sizeof(e));
+	return 0;
+}
+
+SEC("kretprobe/sys_execve")
+int kretprobe__sys_execve(struct pt_regs *ctx)
+{
+	struct event e = {};
+
+	e.type = EVENT_EXECVE_EXIT;
+	e.pid = bpf_get_current_pid_tgid() >> 32;
+	e.ret = PT_REGS_RC(ctx);
+	bpf_get_current_comm(&e.comm, sizeof(e.comm));
+
+	bpf_perf_event_output(ctx, &pb, BPF_F_CURRENT_CPU, &e, sizeof(e));
+	return 0;
+}
+
 char LICENSE[] SEC("license") = "GPL";

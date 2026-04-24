@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.2] - 2026-04-24
+
+### 修复
+- **兼容模式 execve 追踪失败**：CentOS 7 (3.10.0-957) 等老内核缺少 `syscalls:sys_enter_execve` tracepoint，导致 `-execve` 无输出。
+  - 在 `bpf/trace_legacy.bpf.c` 中新增 `kprobe/sys_execve` 与 `kretprobe/sys_execve`，通过 `pt_regs` 读取参数和返回值。
+  - `legacy.go` 在 tracepoint attach 失败后自动 fallback 到 `link.Kprobe` / `link.Kretprobe`。
+  - 事件格式与 tracepoint 版完全一致，用户侧无感知。
+
+---
+
 ## [0.3.1] - 2026-04-23
 
 ### 新增
