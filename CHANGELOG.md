@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.4] - 2026-04-24
+
+### 新增
+- **RHEL 9 / AlmaLinux 9 环境检测与报错增强**：显著降低 `cannot create bpf perf link: permission denied` 的排查成本。
+  - `main.go`：启动时自动检测 Kernel Lockdown（Secure Boot）、SELinux Enforcing、`perf_event_paranoid`，并在日志中直接列出修复命令。
+  - `modern.go` / `legacy.go`：当 `link.Tracepoint` attach 返回 `permission denied` 时，自动追加三条根因分析与对应操作提示（关闭 Secure Boot / setenforce 0 / 调整 perf_event_paranoid）。
+
+### 文档
+- 新增 `docs/releases/v0.3.4.md`。
+- CHANGELOG.md 追加 v0.3.4 条目。
+
+---
+
 ## [0.3.3] - 2026-04-24
 
 ### 修复

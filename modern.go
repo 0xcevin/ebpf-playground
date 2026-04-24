@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/cilium/ebpf"
@@ -138,7 +139,14 @@ func runModern(attachExecve, attachNet bool, ringbufSize uint32, flowThresholdBy
 	attached := 0
 	for i := range attachments {
 		if attachments[i].err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to attach %s: %v\n", attachments[i].name, attachments[i].err)
+			msg := fmt.Sprintf("Warning: failed to attach %s: %v", attachments[i].name, attachments[i].err)
+			if strings.Contains(attachments[i].err.Error(), "permission denied") {
+				msg += "\n  Hint: 在 RHEL 9 / AlmaLinux 9 / Rocky 9 等系统上，这通常由以下原因导致："
+				msg += "\n        1. Secure Boot 触发 Kernel Lockdown → 进 BIOS 关闭 Secure Boot"
+				msg += "\n        2. SELinux Enforcing → sudo setenforce 0（临时测试）"
+				msg += "\n        3. perf_event_paranoid 过高 → echo -1 | sudo tee /proc/sys/kernel/perf_event_paranoid"
+			}
+			fmt.Fprintln(os.Stderr, msg)
 		} else {
 			attached++
 			defer attachments[i].l.Close()

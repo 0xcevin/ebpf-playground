@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path"
 	"strconv"
 	"strings"
@@ -15,6 +16,13 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 	"golang.org/x/sys/unix"
 )
+
+type execveEnterInfo struct {
+	comm     string
+	filename string
+}
+
+var execveEnterCache = make(map[uint32]execveEnterInfo)
 
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -Werror -I/usr/include -I./bpf" -target bpfel,bpfeb trace bpf/trace.bpf.c
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -Wall -Werror -I/usr/include -I./bpf -DBPF_NO_PRESERVE_ACCESS_INDEX" -target amd64,arm64 trace_legacy bpf/trace_legacy.bpf.c
@@ -102,7 +110,10 @@ func main() {
 		fmt.Println("[OK] 当前为 root 用户")
 	}
 
-	// 3. 解除 memlock
+	// 3. 检查可能影响 eBPF tracepoint 的安全限制
+	checkSecurityConstraints()
+
+	// 4. 解除 memlock
 	if err := rlimit.RemoveMemlock(); err != nil {
 		// 老内核（如 CentOS 7 的 3.10）可能不支持 RemoveMemlock 内部的 cgroup 检测，降级到手动设置
 		fmt.Fprintf(os.Stderr, "[WARN] rlimit.RemoveMemlock 失败: %v，尝试手动设置...\n", err)
@@ -254,14 +265,99 @@ func bpfSyscallAvailable() bool {
 	return err != syscall.ENOSYS
 }
 
+func checkSecurityConstraints() {
+	var hints []string
+
+	// Kernel Lockdown (通常由 Secure Boot 触发)
+	if data, err := os.ReadFile("/sys/kernel/security/lockdown"); err == nil {
+		s := strings.TrimSpace(string(data))
+		// 格式示例: [none] integrity confidentiality
+		if idx := strings.Index(s, "]"); idx > 1 && strings.HasPrefix(s, "[") {
+			current := s[1:idx]
+			if current == "integrity" || current == "confidentiality" {
+				fmt.Println("[WARN] Kernel lockdown 已启用（通常由 Secure Boot 触发），可能阻止 eBPF tracepoint attach。")
+				hints = append(hints, "  → 方案 A：进 BIOS 关闭 Secure Boot（根治）")
+				hints = append(hints, "  → 方案 B：内核参数添加 lockdown=0（部分环境有效）")
+			}
+		}
+	}
+
+	// SELinux
+	if path, err := exec.LookPath("getenforce"); err == nil {
+		out, err := exec.Command(path).Output()
+		if err == nil {
+			mode := strings.TrimSpace(string(out))
+			if mode == "Enforcing" {
+				fmt.Println("[WARN] SELinux 处于 Enforcing 模式，可能限制 perf event / tracepoint attach。")
+				hints = append(hints, "  → 方案 C：sudo setenforce 0（临时测试）")
+			}
+		}
+	}
+
+	// perf_event_paranoid
+	if data, err := os.ReadFile("/proc/sys/kernel/perf_event_paranoid"); err == nil {
+		v, _ := strconv.Atoi(strings.TrimSpace(string(data)))
+		if v >= 2 {
+			fmt.Printf("[WARN] perf_event_paranoid=%d，可能限制 tracepoint 访问。\n", v)
+			hints = append(hints, "  → 方案 D：echo -1 | sudo tee /proc/sys/kernel/perf_event_paranoid")
+		}
+	}
+
+	if len(hints) > 0 {
+		fmt.Println("[INFO] 如遇 attach permission denied，可尝试以下方案：")
+		for _, h := range hints {
+			fmt.Println(h)
+		}
+	}
+}
+
+func readProcExe(pid int) string {
+	p, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
+	if err != nil {
+		return ""
+	}
+	return p
+}
+
+func readProcCmdline(pid int) string {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil {
+		return ""
+	}
+	data = bytes.TrimRight(data, "\x00")
+	parts := strings.Split(string(data), "\x00")
+	return strings.Join(parts, " ")
+}
+
 func printEvent(e Event) {
 	comm := string(bytes.TrimRight(e.Comm[:], "\x00"))
 	switch EventType(e.Type) {
 	case EventExecveEnter:
 		fname := string(bytes.TrimRight(e.Data[:], "\x00"))
+		execveEnterCache[e.Pid] = execveEnterInfo{comm: comm, filename: fname}
 		fmt.Printf("%-8s %-6d %-16s %-12s %s\n", "EXEC", e.Pid, comm, "", fname)
 	case EventExecveExit:
-		fmt.Printf("%-8s %-6d %-16s %-12d %s\n", "EXECRET", e.Pid, comm, e.Ret, "")
+		info, ok := execveEnterCache[e.Pid]
+		if !ok {
+			info = execveEnterInfo{comm: comm, filename: ""}
+		}
+		delete(execveEnterCache, e.Pid)
+
+		var exePath, cmdline string
+		if e.Ret >= 0 {
+			exePath = readProcExe(int(e.Pid))
+			cmdline = readProcCmdline(int(e.Pid))
+		}
+		if exePath == "" {
+			exePath = info.filename
+		}
+		if cmdline == "" {
+			cmdline = info.filename
+		}
+		if len(cmdline) > 200 {
+			cmdline = cmdline[:200] + "..."
+		}
+		fmt.Printf("%-8s %-6d %-16s ret=%-6d exe=%s cmd=%s\n", "EXEC", e.Pid, info.comm, e.Ret, exePath, cmdline)
 	case EventConnect:
 		addrStr := parseSockaddr(e.Data[:])
 		fmt.Printf("%-8s %-6d %-16s %-12s %s\n", "CONNECT", e.Pid, comm, "", addrStr)
