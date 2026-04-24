@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.3] - 2026-04-24
+
+### 修复
+- **兼容模式 execve 追踪失败**：CentOS 7 (3.10.0-957) 等老内核缺少 `syscalls:sys_enter_execve` tracepoint，导致 `-execve` 无输出。
+  - 在 `bpf/trace_legacy.bpf.c` 中新增 `kprobe/sys_execve` 与 `kretprobe/sys_execve`。
+  - `legacy.go` 在 tracepoint attach 失败后自动 fallback 到 `link.Kprobe` / `link.Kretprobe`。
+- **CI arm64 编译失败**：v0.3.2 将 legacy 的 `go:generate` target 误改为 `amd64`，导致 `GOARCH=arm64` 构建缺失 `loadTrace_legacy`。
+  - `main.go`：恢复为 `amd64,arm64` 双 target，bpf2go 同时生成双架构对象。
+  - `bpf/trace_legacy.bpf.c`：使用架构内联寄存器访问宏（`KP_PARM1` / `KP_RET`）替代 `bpf_tracing.h` 的 `PT_REGS_*`，避免 arm64 缺少 `struct user_pt_regs` 定义。
+
+---
+
 ## [0.3.2] - 2026-04-24
 
 ### 修复

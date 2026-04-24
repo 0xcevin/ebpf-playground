@@ -414,6 +414,26 @@ int tracepoint__sys_enter_close(struct trace_event_raw_sys_enter *ctx)
 	return 0;
 }
 
+/* Architecture-specific register access for kprobe fallback.
+ * We avoid bpf_tracing.h PT_REGS macros because arm64 needs
+ * struct user_pt_regs which is not present in our x86-generated vmlinux.h.
+ */
+#if defined(__TARGET_ARCH_x86)
+#define KP_PARM1(ctx) (((struct pt_regs *)(ctx))->di)
+#define KP_RET(ctx)   (((struct pt_regs *)(ctx))->ax)
+#elif defined(__TARGET_ARCH_arm64)
+struct kp_pt_regs {
+	unsigned long regs[31];
+	unsigned long sp;
+	unsigned long pc;
+	unsigned long pstate;
+};
+#define KP_PARM1(ctx) (((struct kp_pt_regs *)(ctx))->regs[0])
+#define KP_RET(ctx)   (((struct kp_pt_regs *)(ctx))->regs[0])
+#else
+#error "Unsupported architecture for kprobe fallback"
+#endif
+
 /* Fallback kprobes for kernels without syscall tracepoints (e.g. CentOS 7 3.10) */
 SEC("kprobe/sys_execve")
 int kprobe__sys_execve(struct pt_regs *ctx)
@@ -424,7 +444,7 @@ int kprobe__sys_execve(struct pt_regs *ctx)
 	e.pid = bpf_get_current_pid_tgid() >> 32;
 	bpf_get_current_comm(&e.comm, sizeof(e.comm));
 
-	const char *filename = (const char *)PT_REGS_PARM1(ctx);
+	const char *filename = (const char *)KP_PARM1(ctx);
 	bpf_probe_read_str(&e.data, sizeof(e.data), (void *)filename);
 
 	bpf_perf_event_output(ctx, &pb, BPF_F_CURRENT_CPU, &e, sizeof(e));
@@ -438,7 +458,7 @@ int kretprobe__sys_execve(struct pt_regs *ctx)
 
 	e.type = EVENT_EXECVE_EXIT;
 	e.pid = bpf_get_current_pid_tgid() >> 32;
-	e.ret = PT_REGS_RC(ctx);
+	e.ret = KP_RET(ctx);
 	bpf_get_current_comm(&e.comm, sizeof(e.comm));
 
 	bpf_perf_event_output(ctx, &pb, BPF_F_CURRENT_CPU, &e, sizeof(e));
